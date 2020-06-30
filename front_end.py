@@ -14,7 +14,7 @@ tracking_details = {
 }
 
 for k, v in back_end.test_tracking_codes.items():
-    if v == "delivered":
+    if v == "unknown":
         break
     dict_ = {k: ["USPS", v]}
     tracking_details.update(dict_)

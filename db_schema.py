@@ -147,5 +147,5 @@ class QueryExecutor:
 if __name__ == "__main__":
     q = QueryExecutor()
     # q.delete_all_from_table()
-    q.select("394141653900")
-    # q.select_all()
+    # q.select("394141653900")
+    q.select_all()

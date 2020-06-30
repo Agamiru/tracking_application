@@ -65,7 +65,6 @@ class TrackObject:
 
     # Tracking object specific processing
     def _updater(self) -> Callable:
-        # self.duplicate_check()
         # Populates self.exist_obj_list
         self._save_obj()
         upd_obj_list = []   # List of all objects that pass through _updater func
@@ -139,18 +138,22 @@ class TrackObject:
     # Saves object to db only if commit is true
     def _save_obj(self, commit=False) -> Callable:
         print(f"Saving objects, commit is {commit}\n")
-        upd_query = f"""
-            UPDATE {self.table_name} SET trk_obj = ? WHERE trk_no = ?
-            """
         save_query = f"""
             INSERT INTO {self.table_name}
             ('trk_no', 'carrier', 'item_desc', 'file_path', 'trk_obj') 
             values(?,?,?,?,?)
             """
-        return self.db_scheduler(save_query, other_query=upd_query, commit=commit)
+        return self.db_scheduler(save_query, commit=commit)
+
+    # Returns update query
+    def _update_obj(self) -> str:
+        upd_query = f"""
+            UPDATE {self.table_name} SET trk_obj = ? WHERE trk_no = ?
+            """
+        return upd_query
 
     # Saves objects or fetches data from db table
-    def db_scheduler(self, query: str, other_query: str = None, obj: Iterable = None,
+    def db_scheduler(self, query: str, obj: Iterable = None,
                      commit=False, fetch_one=True) -> Union[None, Callable, List]:
         conn = sqlite3.connect(DB_PATH)
         no_upd_list, bytes_obj_list = [], []
@@ -179,7 +182,8 @@ class TrackObject:
                     # Update existing objects in db
                     elif obj in self.exist_upd_obj:
                         values = (trk_obj, trk_no)
-                        cur.execute(other_query, values)
+                        query = self._update_obj()
+                        cur.execute(query, values)
                         conn.commit()
                         print(f" Existing obj {trk_no} updated!")
                     # Ignore objects with no updates
@@ -220,7 +224,7 @@ class TrackObject:
                 return
         return self.obj_list
 
-    # Returns a list as obj parameter
+    # Returns all updated objects and returns obj_list
     def _fetch_all(self) -> List:
         query = f"""
         SELECT trk_obj FROM {self.table_name} WHERE trk_no = ?
@@ -230,7 +234,7 @@ class TrackObject:
             trk_no_list.append(obj.tracking_code)
         return self.db_scheduler(query, obj=trk_no_list, fetch_one=False)
 
-    # Returns as tuple as obj parameter
+    # Fetches one obj from db and adds to exist_obj_list
     def _fetch_one(self, trk_no: str) -> None:
         query = f"""
         SELECT trk_obj FROM {self.table_name} WHERE trk_no = ?
