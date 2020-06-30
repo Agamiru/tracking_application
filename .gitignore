@@ -1,4 +1,5 @@
 __pycache__/
-.sqlite3
+*.sqlite3
 tracking_data_files/
 test.py
+*.__init__.py
