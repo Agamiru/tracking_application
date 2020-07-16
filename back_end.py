@@ -2,6 +2,7 @@ import easypost
 import json
 import os
 import sqlite3
+from sqlite3 import Connection as Conn
 import pickle
 import datetime
 import db_schema
@@ -11,7 +12,6 @@ from typing import Callable, Union, Tuple, List, Any, Iterable
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "app\\db.sqlite3")
 TRK_DATA_PATH = os.path.join(BASE_DIR, "app\\tracking_data_files")
-OBJ_FP = os.path.join(BASE_DIR, TRK_DATA_PATH, "objects")
 TEXT_FP = os.path.join(BASE_DIR, TRK_DATA_PATH, "text")
 
 # Api Keys
@@ -40,19 +40,20 @@ test_tracking_codes = {
 class TrackObject:
 
     def __init__(self):
-        self.obj_fp = OBJ_FP    # File path for storing trk objects
         self.text_fp = TEXT_FP   # File path for storing text tracking details
 
         self.obj_list = []  # List of ALL tracking objects for this request
-        self.exist_upd_obj = []  # List of EXISTING UPDATED objects
-        self.new_upd_obj = []  # List of NEW & UPDATED tracking objects
+        self.exist_upd_obj = []  # List of EXISTING & UPDATED objects
+        self.new_upd_obj = []  # List of NEW & UPDATED objects
         self.exist_obj_list = []  # List of EXISTING objects from db
 
-        self.table_name = db_schema.trk_obj_table_name
+        self.table_name = db_schema.trk_obj_table_name  # SQL table name
 
+    # Makes API request and appends returned tracking obj to obj_list
     def track_item(self, trk_details: dict) -> Callable:
         for trk_no, other in trk_details.items():
             easypost.api_key = test_key if trk_no in test_tracking_codes else prod_key
+            # Todo: Error control needed here
             tracker = easypost.Tracker.create(
                 tracking_code=trk_no,
                 carrier=other[0]
@@ -65,11 +66,11 @@ class TrackObject:
 
     # Tracking object specific processing
     def _updater(self) -> Callable:
-        # Populates self.exist_obj_list
+        # Populates exist_obj_list
         self._save_obj()
         upd_obj_list = []   # List of all objects that pass through _updater func
-        top_count = 0
-        lower_count = 0
+        inner_count = 0
+        outer_count = 0
         # Update each object
         for obj in self.obj_list:
             for exist_obj in self.exist_obj_list:
@@ -84,22 +85,21 @@ class TrackObject:
                         exist_obj.new_updates = updates - count
                         exist_obj.update_count = updates
                         exist_obj.has_update = True
-                        self.exist_upd_obj.append(obj)
                         print(f"Tracking object {exist_obj.tracking_code} updated")
+                        self.exist_upd_obj.append(exist_obj)
                     # No updates
                     else:
-                        # This block will not update self.exist_upd_obj
+                        # Update exist_obj with no updates
                         exist_obj.has_update = False
                         exist_obj.new_updates = 0
-                        print(f"No updates for {exist_obj.tracking_code}")
                     # Only updated in this block
-                    top_count += 1
+                    inner_count += 1
                     upd_obj_list.append(exist_obj)
                     break
                 continue
 
-            if top_count > lower_count:
-                lower_count = top_count
+            if inner_count > outer_count:
+                outer_count = inner_count
                 continue
             # New objects
             # Set attributes for first time savings, populates self.new_upd_obj
@@ -125,7 +125,7 @@ class TrackObject:
 
     # Write api response to file
     def _save_text(self) -> Callable:
-        # Write only updated objects to file
+        # Write only objects with updates to file
         updated_list = self.exist_upd_obj + self.new_upd_obj
         for obj in updated_list:
             file_name = f"{obj.tracking_code + '.txt'}"
@@ -136,6 +136,7 @@ class TrackObject:
         return self._save_obj(commit=True)
 
     # Saves object to db only if commit is true
+    # If commit is false, it updates exist_obj_list
     def _save_obj(self, commit=False) -> Callable:
         print(f"Saving objects, commit is {commit}\n")
         save_query = f"""
@@ -143,7 +144,7 @@ class TrackObject:
             ('trk_no', 'carrier', 'item_desc', 'file_path', 'trk_obj') 
             values(?,?,?,?,?)
             """
-        return self.db_scheduler(save_query, commit=commit)
+        return self._db_saver(save_query, commit=commit)
 
     # Returns update query
     def _update_obj(self) -> str:
@@ -153,93 +154,125 @@ class TrackObject:
         return upd_query
 
     # Saves objects or fetches data from db table
-    def db_scheduler(self, query: str, obj: Iterable = None,
-                     commit=False, fetch_one=True) -> Union[None, Callable, List]:
+    def _db_saver(self, query: str,
+                  commit=False) -> Union[None, Callable, List]:
+        # Todo: Table only needs trk_no, file_path and tracking obj blob.
+        # Todo: Other info are contained in the object data. Such columns are redundant.
         conn = sqlite3.connect(DB_PATH)
         no_upd_list, bytes_obj_list = [], []
         counter = 0
-        # For requests with no provided iterable, use self.obj_list
-        if obj is None:
-            # Populates obj_exists_list with existing objects in db
-            # Saves ob
-            for obj in self.obj_list:
-                counter += 1
-                cur = conn.cursor()
-                trk_no = obj.tracking_code
-                carrier = obj.carrier
-                item_desc = obj.item_desc
-                file_path = f"{self.text_fp}\\{trk_no}.txt"
-                # Pickle tracking object
-                trk_obj = pickle.dumps(obj)
 
-                if commit:
-                    # Save new objects to db
-                    if obj in self.new_upd_obj:
-                        values = (trk_no, carrier, item_desc, file_path, trk_obj)
-                        cur.execute(query, values)
-                        conn.commit()
-                        print(f" New obj {trk_no} saved!")
-                    # Update existing objects in db
-                    elif obj in self.exist_upd_obj:
-                        values = (trk_obj, trk_no)
-                        query = self._update_obj()
-                        cur.execute(query, values)
-                        conn.commit()
+        # Populates obj_exists_list with existing objects in db if commit is False
+        for obj in self.obj_list:
+            counter += 1
+            cur = conn.cursor()
+            trk_no = obj.tracking_code
+            carrier = obj.carrier
+            item_desc = obj.item_desc
+            file_path = f"{self.text_fp}\\{trk_no}.txt"
+            # Pickle tracking object
+            trk_obj = pickle.dumps(obj)
+
+            if commit:
+                # Save new objects to db
+                if obj in self.new_upd_obj:
+                    values = (trk_no, carrier, item_desc, file_path, trk_obj)
+                    cur.execute(query, values)
+                    conn.commit()
+                    print(f" New obj {trk_no} saved!")
+                # Update existing objects in db
+                else:
+                    values = (trk_obj, trk_no)
+                    upd_query = self._update_obj()
+                    if obj in self.exist_upd_obj:
                         print(f" Existing obj {trk_no} updated!")
                     # Ignore objects with no updates
                     else:
-                        no_upd_list.append(obj)
-                        continue
+                        print(f"No updates for {obj.tracking_code}")
+                    cur.execute(upd_query, values)
+                    conn.commit()
 
-                # Checks if object already exists in db, doesn't save to db!
-                else:
-                    values = (trk_no, carrier, item_desc, file_path, trk_obj)
-                    try:
-                        cur.execute(query, values)
-                    except sqlite3.IntegrityError:
-                        print(f"{trk_no} obj already exists")
-                        # Fetches the existing obj and appends to exist_obj_list
-                        self._fetch_one(trk_no=trk_no)
-            print("\n")
-            conn.close()
-            if commit:
-                # Fetches all updated objects and returns obj_list
-                return self._fetch_all()
-            return
+            # Checks if object already exists in db, doesn't save to db!
+            else:
+                values = (trk_no, carrier, item_desc, file_path, trk_obj)
+                try:
+                    cur.execute(query, values)
+                except sqlite3.IntegrityError:
+                    print(f"{trk_no} obj already exists")
+                    # Fetches the existing obj and appends to exist_obj_list
+                    self._fetch_one(trk_no=trk_no, conn=conn)
+        print("\n")
+        conn.close()
+        if commit:
+            # Fetches all updated objects and returns obj_list
+            return self.fetch_all()
+        return
 
-        # For _fetch_saved
+    # Fetches one obj from db and adds to exist_obj_list
+    def _fetch_one(self, trk_no: str, conn: Conn) -> None:
+        query = f"""
+            SELECT trk_obj FROM {self.table_name} WHERE trk_no = ?
+            """
+        self._db_fetch(query, trk_nos=[trk_no], conn=conn)
+        return
+
+    def _db_fetch(self, query: str, trk_nos: List = None,
+                  conn: Conn = None) -> None:
+        new_conn = None
+        # Cursor uses either old or new connection
+        if conn is None:
+            new_conn = sqlite3.connect(DB_PATH)
+            cur = new_conn.cursor()
         else:
+            cur = conn.cursor()
+        # Fetch objects using a list of tracking numbers
+        # for _fetch_one and fetch
+        if trk_nos is not None:
             # populates self.exist_obj_list
-            for trk_nos in obj:
-                cur = conn.cursor()
-                cur.execute(query, (trk_nos,))
-                for trk_no in cur.fetchall():
-                    bytes_obj = trk_no[0]
+            for trk_no in trk_nos:
+                cur.execute(query, (trk_no,))
+                for obj in cur.fetchall():
+                    bytes_obj = obj[0]
                     assert type(bytes_obj) == bytes, "Not Bytes Obj"
                     trk_obj = pickle.loads(bytes_obj)
                     assert type(trk_obj) == easypost.Tracker, "Not Tracker Obj"
                     self.exist_obj_list.append(trk_obj)
-            conn.close()
-            if fetch_one:
-                return
+            if conn is None:    # new_conn is closed here
+                new_conn.close()
+            return  # self.exist_obj_list
+        # for fetch_all, updates obj_list
+        else:
+            cur.execute(query)
+            # fetchall returns a list of table rows in tuples
+            for obj in cur.fetchall():
+                bytes_obj = obj[0]
+                assert type(bytes_obj) == bytes, "Not Bytes Obj"
+                trk_obj = pickle.loads(bytes_obj)
+                assert type(trk_obj) == easypost.Tracker, "Not Tracker Obj"
+                self.obj_list.append(trk_obj)
+            new_conn.close()
+            return  # self.obj_list
+
+    # Returns obj_list if newly updated or fetches from db
+    def fetch_all(self) -> List:
+        if self.obj_list:
+            pass
+        else:
+            query = f"""
+            SELECT trk_obj FROM {self.table_name}
+            """
+            self._db_fetch(query)
+            return self.obj_list
         return self.obj_list
 
-    # Returns all updated objects and returns obj_list
-    def _fetch_all(self) -> List:
+    # Returns exist_obj_list
+    def fetch(self, trk_nos: List[str]) -> List:
+        self.exist_obj_list = []
         query = f"""
         SELECT trk_obj FROM {self.table_name} WHERE trk_no = ?
         """
-        trk_no_list = []
-        for obj in self.obj_list:
-            trk_no_list.append(obj.tracking_code)
-        return self.db_scheduler(query, obj=trk_no_list, fetch_one=False)
-
-    # Fetches one obj from db and adds to exist_obj_list
-    def _fetch_one(self, trk_no: str) -> None:
-        query = f"""
-        SELECT trk_obj FROM {self.table_name} WHERE trk_no = ?
-        """
-        return self.db_scheduler(query, obj=(trk_no,))
+        self._db_fetch(query, trk_nos=trk_nos)
+        return self.exist_obj_list
 
     # Converts datetime obj to string
     @staticmethod

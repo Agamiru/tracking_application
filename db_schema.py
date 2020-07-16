@@ -103,15 +103,18 @@ class QueryExecutor:
         query = f"SELECT * FROM {self.trk_obj_table_name}"
         cur = self.conn.cursor()
         cur.execute(query)
-        for a, b, c, d, e, f in cur:
-            print(a, b, c, d, e)
+        if not cur.fetchall():
+            print("No items to display")
+        else:
+            for a, b, c, d, e, f in cur:
+                print(a, b, c, d, e)
         self.conn.close()
 
     def delete_all_from_table(self):
         query = f"DELETE FROM {self.trk_obj_table_name}"
         self.conn.execute(query)
         self.conn.commit()
-        return self.select_all
+        return self.select_all()
 
     def select(self, where: str, columns: List[str] = None):
         values = ", ".join(self.table_columns)
@@ -146,6 +149,6 @@ class QueryExecutor:
 
 if __name__ == "__main__":
     q = QueryExecutor()
-    # q.delete_all_from_table()
-    # q.select("394141653900")
-    q.select_all()
+    q.delete_all_from_table()
+    # # # q.select("394141653900")
+    # q.select_all()
