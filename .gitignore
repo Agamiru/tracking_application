@@ -3,3 +3,5 @@ __pycache__/
 tracking_data_files/
 test.py
 *__init__.py
+*keys.txt
+
