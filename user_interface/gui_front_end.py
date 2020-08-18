@@ -1,4 +1,4 @@
-from tracking_gui import (
+from gui_back_end import (
     MainWindow, MenuFrame, MenuBar, FileMenu,TrackingFrame,
     TrkEntryGroup,
 )
